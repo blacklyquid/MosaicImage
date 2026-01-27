@@ -11,27 +11,45 @@ def print2d(d):
 		print(", ".join(map(str, row)))
 # python3 mosaic.py -i /pool/IMG20251104081323.jpg -p /pool -o /output/mosaic.jpg
 
+# Bit is a pixel
+class Bit:
+	def __init__(self, data: tuple[int,int,int]):
+		self.data = data
+		
+	def sub(self, other) -> int:
+		if not isinstance(other, Bit):
+			raise TypeError("Unsupported operand type(s) for -")
+			quit()
+		diff = 0
+		for i in range(0,3):
+			diff += abs(self.data[i] - other.data[i])
+		return diff
+			
+
+	def __repr__(self):
+		return f"[{self.data}]"
+
+
+
 # image tile object. stores the position of the tile.
 # Tile may be an entire image or just part of a larger one
 # pos row and col of the tile
 # Tiles are all 2x2
 # data stores pixel colors for earch of the 4 pixels
 class MosaicTile:
-	def __init__(self, img: Image=None, pos=(0,0), imagepath=None, size=3):
+	def __init__(self, img: Image=None, pos:tuple[int,int]=(0,0), imagepath:str=None, size: int=3):
+		
 		self.pos = pos
 		x, y = pos[0] * size, pos[1] * size
+
+		if img is not None and isinstance(img, Image.Image):
 		
-		if img is not None:
 			self.data = [[[0 for _ in range(3)] for _ in range(size)] for _ in range(size)]
 			#self.data = [[[0] for _ in range(size)] for _ in range(size)]
 			for r in range(0,size):
 				for c in range(0,size):
-					p = img.getpixel(( x+r, y+c ))
-					#self.data[r][c] = sum(p)
-					self.data[r][c][0] = p[0]
-					self.data[r][c][1] = p[1]
-					self.data[r][c][2] = p[2]
-		#[list(row) for row in zip(*cpy.data[::-1])]
+					self.data[r][c] = Bit(img.getpixel(( x+r, y+c )))
+
 		#self.exif(img)
 		self.size = size
 		self.x, self.y = (x, y)
@@ -39,16 +57,16 @@ class MosaicTile:
 		self.imagepath = imagepath
 		self.score = 0
 		self.used = 0
-	
+
 	def clone(self):
 		cpy = MosaicTile(pos=self.pos, imagepath=self.imagepath)
 		cpy.data = self.data
 		cpy.score = self.score
 		cpy.rotation = self.rotation
-		
+
 		return cpy
-		
-		
+
+
 	def exif(self, img: Image):
 
 		exif_data_raw = img.getexif()
@@ -60,17 +78,19 @@ class MosaicTile:
 				labeled_exif_data[tag_name] = value
 		self.exif = labeled_exif_data
 
-	
+
 	# Given a target tile, find the best score/rotation
 	def fitTarget(self, target, rotation:bool=True):
+		
+		diff = 0
 		self.rotation = -1
-		self.score = target.tileDifference(self)
-
+		#self.score = target.tileDifference(self)
+		self.score = self.sub(target)
 		if rotation is True:
 
-			score90 = target.tileDifference(self.rotate())
-			score180 = target.tileDifference(self.rotate().rotate())
-			score270 = target.tileDifference(self.rotate().rotate().rotate())
+			score90 = self.rotate().sub(target)
+			score180 = self.rotate(180).sub(target)
+			score270 = self.rotate(270).sub(target)
 			if score90 < self.score:
 				self.score = score90
 				self.rotation = Image.Transpose.ROTATE_90
@@ -83,39 +103,29 @@ class MosaicTile:
 				self.score = score270
 				self.rotation = Image.Transpose.ROTATE_270
 	
-	def tileDifference(self, tile) -> int:
+	def sub(self, tile) -> int:
+		if not isinstance(tile, MosaicTile):
+			raise TypeError("Unsupported operand type(s) for -")
+
 		diff = 0
 		for r in range(0,self.size):
-			for c in range(0,self.size):
-				diff += self.colorDistance(self.data[r][c], tile.data[r][c])
+			for c in range(0,self.size):			
+				diff += self.data[r][c].sub(tile.data[r][c])
 		return diff
-	
-	# the distance between 2 pixels colors
-	def colorDistance(self, p1: tuple[int,int,int], p2: tuple[int,int,int]) -> int:
-		dist = 0
-		for i in range(0, 3):
-			dist += math.pow(p2[i] - p1[i], 2)
-		return dist
-	
-	# the difference between 2 pixels
-	def colorDifference(self, p1: tuple[int,int,int], p2: tuple[int,int,int]) -> int:
-		diff = 0
-		for i in range(0,3):
-			diff += abs(p2[i] - p1[i])
-			
-		return int(diff)
-	
-	
 
-	def rotate(self):
+	def rotate(self, deg: int=90):
 		# copy, rotate and return clone
 		cpy = self.clone()
 		cpy.data = [list(row) for row in zip(*cpy.data[::-1])]
+		if deg >= 180:
+			cpy.data = [list(row) for row in zip(*cpy.data[::-1])]
+		if deg >= 270:
+			cpy.data = [list(row) for row in zip(*cpy.data[::-1])]
 		return cpy
 
-	
-	
-      			
+
+
+
 	def __str__(self) -> str:
 		rtrn = ""
 		for d in self.data:
@@ -149,35 +159,35 @@ class Mosaic:
 		self.BITS = 10
 		self.use_cache = False
 		self.preview = MosaicPreview()
-	
+
 	@property
 	def bits(self) -> int:
 		return self.BITS
 	@bits.setter
 	def bits(self, value:int):
 		self.BITS = value
-	
+
 	@property
 	def use_cache(self) -> bool:
 		return self._use_cache
 	@use_cache.setter
 	def use_cache(self, value:bool):
 		self._use_cache = value
-		
+
 	@property
 	def rotation(self) -> bool:
 		return self._rotation
 	@rotation.setter
 	def rotation(self, value:bool):
 		self._rotation = value
-		
+
 	@property
 	def repeat(self):
 		return self._repeat
 	@repeat.setter
 	def repeat(self, value:int):
 		self._repeat = value
-	
+
 	@property
 	def show_build(self):
 		return self.preview.active
@@ -186,7 +196,7 @@ class Mosaic:
 	def show_build(self, value:bool):
 		if isinstance(value, (bool)):
 			self.preview.active = value
-		
+
 	def setMosaic(self, imagepath: str):
 		if not os.path.isfile(imagepath):
 				raise Exception(f"The image '{imagepath}' could not be found")
@@ -219,7 +229,7 @@ class Mosaic:
 		self.pool = sorted(self.pool, key=lambda tile: tile.score)
 		if self.repeat < 1:
 			return self.pool[0]
-		
+
 		for pool_tile in self.pool:
 			if pool_tile.used < self.repeat:
 				pool_tile.used += 1
@@ -233,7 +243,7 @@ class Mosaic:
 			raise Exception(f"There should be more than 0 images in the pool.")
 
 		self.setMosaic(self.imagepath)
-		
+
 		mosaic = Image.new(mode="RGB", size=((self.resolution * self.cols)*self.mult, (self.resolution * self.rows)*self.mult))
 		tile_counter = 0
 		number_tiles = len(self.tiles)
@@ -310,7 +320,7 @@ class MosaicPool:
 			self.load()
 			self.cache.contents = self.tiles
 		self.subdirs = [d for d in self.files if os.path.isdir(os.path.join(self.dirpath, d))]
-		
+
 	def load(self):
 		self.imagefiles = [imgs for imgs in self.files if imgs.endswith(self.image_types)]
 		progress = MosaicProgressBar(len(self.imagefiles))
@@ -320,10 +330,10 @@ class MosaicPool:
 			if tile:
 				self.tiles.append( tile )
 				progress.advance().display()
-						
+
 	def save(self):
 		self.cache.save()
-	
+
 	def genTile(self, imagepath:str):
 		if not os.path.isfile(imagepath):
 			raise Exception(f"The image '{imagepath}' could not be found")
@@ -335,7 +345,7 @@ class MosaicPool:
 		except Exception as e:
 			print("Image/Tile Error: ", e)
 			return False
-		
+
 class MosaicProgressBar:
 	def __init__(self, total:int, start:int=0):
 		self.prefix = ''
@@ -344,7 +354,7 @@ class MosaicProgressBar:
 		self.print_end = "\r"
 		self.current = 0
 		self.total = total
-	
+
 	def advance(self):
 		self.current += 1
 		return self
@@ -369,7 +379,7 @@ class MosaicCache:
 		self.filepath = self.genCacheFilename(dirpath)
 		self.loaded = False
 		if not os.path.isdir(base) and enabled is True:
-			
+
 			print(f"Creating directory '{base}'")
 			try:
 				Path(base).mkdir()
@@ -378,8 +388,8 @@ class MosaicCache:
 				self.base_dir = None
 		if enabled is True:
 			self.load()
-		
-		
+
+
 
 	def genCacheFilename(self, dirpath):
 		filename = dirpath.replace("/","")
@@ -426,7 +436,7 @@ if __name__ == "__main__":
 
 	# check input image
 	if os.path.isfile(args.image) == False:
-				raise Exception(f"The image '{args.image}' could not be found")
+		raise Exception(f"The image '{args.image}' could not be found")
 	# check image pool directories
 	for dirpath in args.pool:
 		if os.path.isdir(dirpath) == False:
@@ -451,5 +461,6 @@ if __name__ == "__main__":
 			mosaic.addDirectory(directory, recursive=args.recursive)
 		except Exception as e:
 			print(f"Adding directory {directory} failed: ", e)
-	
+
 	mosaic.build()
+
