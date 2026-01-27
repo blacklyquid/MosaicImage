@@ -17,9 +17,6 @@ class Bit:
 		self.data = data
 		
 	def sub(self, other) -> int:
-		if not isinstance(other, Bit):
-			raise TypeError("Unsupported operand type(s) for -")
-			quit()
 		diff = 0
 		for i in range(0,3):
 			diff += abs(self.data[i] - other.data[i])
