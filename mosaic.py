@@ -6,25 +6,7 @@ from pathlib import Path
 from PIL.ExifTags import TAGS
 register_heif_opener()
 
-def print2d(d):
-	for row in d:
-		print(", ".join(map(str, row)))
-# python3 mosaic.py -i /pool/IMG20251104081323.jpg -p /pool -o /output/mosaic.jpg
 
-# Bit is a pixel
-class Bit:
-	def __init__(self, data: tuple[int,int,int]):
-		self.data = data
-		
-	def sub(self, other) -> int:
-		diff = 0
-		for i in range(0,3):
-			diff += abs(self.data[i] - other.data[i])
-		return diff
-			
-
-	def __repr__(self):
-		return f"[{self.data}]"
 
 
 
@@ -34,21 +16,19 @@ class Bit:
 # Tiles are all 2x2
 # data stores pixel colors for earch of the 4 pixels
 class MosaicTile:
-	def __init__(self, img: Image=None, pos:tuple[int,int]=(0,0), imagepath:str=None, size: int=3):
+	def __init__(self, img: Image=None, pos:tuple[int,int]=(0,0), imagepath:str=None, bits: int=5):
 		
 		self.pos = pos
-		x, y = pos[0] * size, pos[1] * size
+		x, y = pos[0] * bits, pos[1] * bits
 
 		if img is not None and isinstance(img, Image.Image):
-		
-			self.data = [[[0 for _ in range(3)] for _ in range(size)] for _ in range(size)]
-			#self.data = [[[0] for _ in range(size)] for _ in range(size)]
-			for r in range(0,size):
-				for c in range(0,size):
+			self.data = [[0 for _ in range(bits)] for _ in range(bits)]
+			for r in range(0,bits):
+				for c in range(0,bits):
 					self.data[r][c] = Bit(img.getpixel(( x+r, y+c )))
 
 		#self.exif(img)
-		self.size = size
+		self.bits = bits
 		self.x, self.y = (x, y)
 		self.rotation = -1
 		self.imagepath = imagepath
@@ -56,7 +36,7 @@ class MosaicTile:
 		self.used = 0
 
 	def clone(self):
-		cpy = MosaicTile(pos=self.pos, imagepath=self.imagepath)
+		cpy = MosaicTile(pos=self.pos, imagepath=self.imagepath, bits=self.bits)
 		cpy.data = self.data
 		cpy.score = self.score
 		cpy.rotation = self.rotation
@@ -81,7 +61,6 @@ class MosaicTile:
 		
 		diff = 0
 		self.rotation = -1
-		#self.score = target.tileDifference(self)
 		self.score = self.sub(target)
 		if rotation is True:
 
@@ -101,12 +80,10 @@ class MosaicTile:
 				self.rotation = Image.Transpose.ROTATE_270
 	
 	def sub(self, tile) -> int:
-		if not isinstance(tile, MosaicTile):
-			raise TypeError("Unsupported operand type(s) for -")
-
+		
 		diff = 0
-		for r in range(0,self.size):
-			for c in range(0,self.size):			
+		for r in range(0,self.bits):
+			for c in range(0,self.bits):			
 				diff += self.data[r][c].sub(tile.data[r][c])
 		return diff
 
@@ -128,6 +105,7 @@ class MosaicTile:
 		for d in self.data:
 			rtrn = rtrn + f"{d}"
 		return f"{self.imagepath}|Rot:{self.rotation}|used:{self.used}|{rtrn}"
+	
 
 class MosaicPreview:
 	def __init__(self, active:bool=False):
@@ -138,6 +116,159 @@ class MosaicPreview:
 			opencv_image = cv2.cvtColor(np.array(mosaic), cv2.COLOR_RGB2BGR)
 			cv2.imshow("window", opencv_image)
 			k = cv2.waitKey(1) & 0xFF
+
+
+def print2d(d):
+	for row in d:
+		print(", ".join(map(str, row)))
+
+# Bit is a pixel
+class Bit:
+	def __init__(self, data: tuple[int,int,int]):
+		self.data = data
+		
+	def sub(self, other) -> int:
+		diff = 0
+		for i in range(0,3):
+			diff += abs(self.data[i] - other.data[i])
+		return diff
+			
+	def __str__(self):
+		return f"[{self.data}]"
+
+	def __repr__(self):
+		return f"[{self.data[0]}, {self.data[1]}, {self.data[2]}]"
+
+
+
+class MosaicPool:
+	def __init__(self, dirpath:str, resolution:int, use_cache:bool=False, bits=3):
+		self.dirpath = dirpath
+		self.resolution = resolution
+		self.BITS = bits
+		self.use_cache = use_cache
+		
+		print(f"Loading {self.dirpath} images.")
+		
+		self.mdir = MosaicDirectory(dirpath, res=resolution, bits=bits)
+		
+		if use_cache is True:
+			cache = MosaicCache(dirpath, enabled=use_cache)
+			pool = cache.load()
+		
+		if use_cache is False or pool is False:
+			pool = self.mdir.load()
+			
+		self.tiles = pool
+		if use_cache is True:
+			cache.save(pool)
+	
+	@property
+	def subdirs(self):
+		return self.mdir.getSubDirs()
+
+
+	
+class MosaicDirectory:
+	def __init__(self, dirpath: str, res=25, bits=3):
+		self.dirpath = dirpath
+		self.resolution = res
+		self.bits = bits
+		self.image_types = ('jpg','HEIC')
+		self.files = os.listdir(dirpath)
+		
+	def load(self):
+		
+		imagefiles = [imgs for imgs in self.files if imgs.endswith(self.image_types)]
+		progress = MosaicProgressBar(len(imagefiles))
+		tiles = []
+		for filename in imagefiles:
+			tile = self.genTile(os.path.join(self.dirpath, filename))
+			if tile:
+				tiles.append( tile )
+				progress.advance().display()
+		return tiles
+				
+	def genTile(self, imagepath:str):
+		if not os.path.isfile(imagepath):
+			raise Exception(f"The image '{imagepath}' could not be found")
+		try:
+			img = Image.open(imagepath)
+			img = ImageOps.fit(img, (self.resolution, self.resolution), Image.Resampling.LANCZOS)
+			img = img.resize((self.bits, self.bits))
+			return MosaicTile(img, (0,0), imagepath=imagepath, bits=self.bits)
+		except Exception as e:
+			print("Image/Tile Error: ", e)
+			return False
+
+	def getSubDirs(self):
+		return [d for d in self.files if os.path.isdir(os.path.join(self.dirpath, d))]
+		
+class MosaicCache:
+	def __init__(self, dirpath:str, enabled:bool=True, cache_dir:str="cache", end:str="_cache.json"):
+		self.cache_dir = cache_dir
+		self.filename_end = end
+		self.filepath = self.genCacheFilename(dirpath)
+		if not os.path.isdir(cache_dir) and enabled is True:
+
+			print(f"Creating directory '{base}'")
+			try:
+				Path(cache_dir).mkdir()
+			except Exception as e:
+				print("An error occured while trying to create the directory {base}.")
+				self.cache_dir = ''
+
+	def genCacheFilename(self, dirpath):
+		filename = dirpath.replace("/","")
+		filename = filename.replace(" ","_")
+		if self.cache_dir is not None:
+			filename = os.path.join(self.cache_dir, filename)
+		return f"{filename}{self.filename_end}"
+
+	def load(self):
+		
+		tiles = False
+		if os.path.isfile(self.filepath):
+			try:
+				with open(self.filepath, 'r') as json_file:
+					tiles = jsonpickle.decode(json_file.read())
+				cache_len = len(tiles)
+				print(f"Loaded {cache_len} from {self.filepath} cache")
+			
+			except Exception as e:
+				print(f"Failed loading {self.filepath} cache")
+				tiles = False
+			
+		return tiles
+
+	def save(self, tiles):
+		with open(self.filepath, 'w') as json_file:
+			json_file.write(jsonpickle.encode(tiles))
+
+class MosaicProgressBar:
+	def __init__(self, total:int, start:int=0):
+		self.prefix = ''
+		self.suffix = ''
+		self.fill = '█'
+		self.print_end = "\r"
+		self.current = 0
+		self.total = total
+
+	def advance(self):
+		self.current += 1
+		return self
+
+	def display(self):
+		length, rows = os.get_terminal_size(0)
+		length -= 12
+		percent = ("{0:.2f}").format(100 * (self.current / float(self.total)))
+		filledLength = int(length * self.current // self.total)
+		bar = self.fill * filledLength + '-' * (length - filledLength)
+		print(f'\r{self.prefix} |{bar}| {percent}% {self.suffix}', end = self.print_end)
+		# Print New Line on Complete
+		if self.current == self.total:
+			print()
+
 class Mosaic:
 
 	def __init__(self, imagepath: str=None, resolution=25, filename="mosaic.jpg", repeat:int=0, rotation:bool=True):
@@ -153,10 +284,16 @@ class Mosaic:
 		self.cols = None
 		self.repeat = repeat
 		self.rotation = rotation
-		self.BITS = 10
+		self.BITS = 3
 		self.use_cache = False
 		self.preview = MosaicPreview()
-
+	@property
+	def output(self) -> str:
+		return self.output_filepath
+	@output.setter
+	def output(self, value):
+		self.output_filepath = value
+	
 	@property
 	def bits(self) -> int:
 		return self.BITS
@@ -214,7 +351,7 @@ class Mosaic:
 
 		for i in range(0, self.rows):
 			for j in range(0, self.cols):
-				self.tiles.append(MosaicTile(img, (j, i), size=self.BITS ))
+				self.tiles.append(MosaicTile(img, (j, i), bits=self.BITS ))
 
 
 	# find the optimal tile image for the sample area
@@ -284,15 +421,15 @@ class Mosaic:
 		# check if dirpath is a directory
 		if not os.path.isdir(dirpath):
 			raise Exception(f"The image pool directory '{dirpath}' does not exist")
-
+		
 		pool = MosaicPool(dirpath, use_cache=self.use_cache, resolution=self.resolution, bits=self.BITS)
 		self.pool = self.pool + pool.tiles
-		pool.save()
+		
 
 		# if recursive adding of directories is turned on check for directories and add them
 		if recursive is True:
 			for sub in pool.subdirs:
-				self.addDirectory(os.path.join(dirpath, sub))
+				self.addDirectory(os.path.join(dirpath, sub), recursive)
 
 	def __str__(self) -> str:
 		rtrn = ""
@@ -302,129 +439,17 @@ class Mosaic:
 			rtrn = rtrn + f"{t}"
 		return rtrn
 
-class MosaicPool:
-	def __init__(self, dirpath:str, resolution:int, use_cache:bool=False, bits=3):
-		self.dirpath = dirpath
-		self.resolution = resolution
-		self.BITS = bits
-		self.files = os.listdir(dirpath)
-		self.cache = MosaicCache(dirpath, enabled=use_cache)
-		self.use_cache = use_cache
-		self.tiles = self.cache.contents
-		self.image_types = ('jpg','HEIC')
-		print(f"Loading {self.dirpath} pool")
-		if not self.cache.loaded:
-			self.load()
-			self.cache.contents = self.tiles
-		self.subdirs = [d for d in self.files if os.path.isdir(os.path.join(self.dirpath, d))]
-
-	def load(self):
-		self.imagefiles = [imgs for imgs in self.files if imgs.endswith(self.image_types)]
-		progress = MosaicProgressBar(len(self.imagefiles))
-		self.tiles = []
-		for filename in self.imagefiles:
-			tile = self.genTile(os.path.join(self.dirpath, filename))
-			if tile:
-				self.tiles.append( tile )
-				progress.advance().display()
-
-	def save(self):
-		self.cache.save()
-
-	def genTile(self, imagepath:str):
-		if not os.path.isfile(imagepath):
-			raise Exception(f"The image '{imagepath}' could not be found")
-		try:
-			img = Image.open(imagepath)
-			img = ImageOps.fit(img, (self.resolution, self.resolution), Image.Resampling.LANCZOS)
-			img = img.resize((self.BITS, self.BITS))
-			return MosaicTile(img, (0,0), imagepath=imagepath, size=self.BITS)
-		except Exception as e:
-			print("Image/Tile Error: ", e)
-			return False
-
-class MosaicProgressBar:
-	def __init__(self, total:int, start:int=0):
-		self.prefix = ''
-		self.suffix = ''
-		self.fill = '█'
-		self.print_end = "\r"
-		self.current = 0
-		self.total = total
-
-	def advance(self):
-		self.current += 1
-		return self
-
-	def display(self):
-		length, rows = os.get_terminal_size(0)
-		length -= 12
-		percent = ("{0:.2f}").format(100 * (self.current / float(self.total)))
-		filledLength = int(length * self.current // self.total)
-		bar = self.fill * filledLength + '-' * (length - filledLength)
-		print(f'\r{self.prefix} |{bar}| {percent}% {self.suffix}', end = self.print_end)
-		# Print New Line on Complete
-		if self.current == self.total:
-			print()
-
-class MosaicCache:
-	def __init__(self, dirpath:str, enabled:bool=True, base:str="cache", end:str="_cache.json"):
-		self.base_dir = base
-		self.filename_end = end
-		self.contents = False
-		self.enabled = enabled
-		self.filepath = self.genCacheFilename(dirpath)
-		self.loaded = False
-		if not os.path.isdir(base) and enabled is True:
-
-			print(f"Creating directory '{base}'")
-			try:
-				Path(base).mkdir()
-			except Exception as e:
-				print("An error occured while trying to create the directory {base}.")
-				self.base_dir = None
-		if enabled is True:
-			self.load()
-
-
-
-	def genCacheFilename(self, dirpath):
-		filename = dirpath.replace("/","")
-		filename = filename.replace(" ","_")
-		if self.base_dir is not None:
-			filename = os.path.join(self.base_dir, filename)
-		return f"{filename}{self.filename_end}"
-
-	def load(self):
-		self.loaded = False
-		if os.path.isfile(self.filepath) and self.enabled is True:
-			try:
-				with open(self.filepath, 'r') as json_file:
-					self.contents = jsonpickle.decode(json_file.read())
-				cache_len = len(self.contents)
-				print(f"Loaded {cache_len} from {self.filepath} cache")
-				self.loaded = True
-			except Exception as e:
-				print(f"Failed loading {self.filepath} cache")
-				self.loaded = False
-		return self.loaded
-
-	def save(self):
-		if self.enabled is True:
-			with open(self.filepath, 'w') as json_file:
-		    		json_file.write(jsonpickle.encode(self.contents))
-
 if __name__ == "__main__":
 	parser = argparse.ArgumentParser(prog='mosaic', description="Create a mosaic image from a pool of pictures.")
 	parser.add_argument("-d", "--display", action="store_true", help="Display the image as it is built. May error if using on a headless system.")
-	parser.add_argument("-e", "--recursive", action="store_true", help="Recursively add directories to the pool.")
+	parser.add_argument("-R", "--recursive", action="store_true", help="Recursively add directories to the pool.")
 	parser.add_argument("-c", "--use_cache", action="store_true", help="Save pool image information in a file cache. mosaic_pool_cache.json")
 	parser.add_argument("-n", "--no_rotation", action="store_true", help="Do not rotate tiles for best fit. Rotating takes time. Defualt is to rotate.")
 	parser.add_argument("-i", "--image", required=True, type=str, help="Input file. The base image for the mosaic.")
 	parser.add_argument("-p", "--pool", nargs='+', type=str, required=True, help="The directory containing a pool of pictures to use to create the mosaic.")
 	parser.add_argument("-o", "--output", default="mosaic.jpg", type=str, help="Default 'mosaic.jpg'. Ouput file. The name of the file to save the mosaic as.")
 	parser.add_argument("-m", "--multiplier", type=int, default=1, help="Increase the size of the output image by this amount.")
-	parser.add_argument("-R", "--repeat", type=int, default=0, help="Allow thumb images to repeat this many times. Less than 1 is off. Default is 0.")
+	parser.add_argument("-D", "--duplicates", type=int, default=0, help="Allow thumb images to repeat this many times. Less than 1 is off. Default is 0.")
 	parser.add_argument("-r", "--resolution", type=int, default=25, help="The size of the thumbnail in the mosaic. Defaults to 25.")
 	parser.add_argument("-b", "--bits", type=int, default=3, help="The number of pixels to compare. Defaults to 3 = 3x3")
 
@@ -446,18 +471,18 @@ if __name__ == "__main__":
 			Path("cache").mkdir()
 
 	mosaic = Mosaic(args.image, resolution=args.resolution)
+	mosaic.output = args.output
 	mosaic.mult = args.multiplier
-	mosaic.repeat = args.repeat
+	mosaic.repeat = args.duplicates
 	mosaic.show_build = args.display
 	mosaic.use_cache = args.use_cache
 	mosaic.rotation = not args.no_rotation
 	mosaic.bits = args.bits
 
 	for directory in args.pool:
-		try:
-			mosaic.addDirectory(directory, recursive=args.recursive)
-		except Exception as e:
-			print(f"Adding directory {directory} failed: ", e)
+		#try:
+		mosaic.addDirectory(directory, recursive=args.recursive)
+		#except Exception as e:
+		#	print(f"Adding directory {directory} failed: ", e)
 
 	mosaic.build()
-
